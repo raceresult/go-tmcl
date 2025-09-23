@@ -1,5 +1,7 @@
 package tmcl
 
+import "fmt"
+
 const ABS byte = 0
 const REL byte = 1
 const COORD byte = 2
@@ -85,4 +87,62 @@ func (q *TMCL) SIO(port byte, bank byte, value bool) error {
 // GIO is get io
 func (q *TMCL) GIO(port byte, bank byte) (int, error) {
 	return q.Exec(15, port, bank, 0)
+}
+
+// StopApplication stops a running TMCL standalone application.
+func (q *TMCL) StopApplication() error {
+	_, err := q.Exec(128, 0, 0, 0)
+	return err
+}
+
+// RunApplication starts the TMCL application.
+// Optionally an address can be supplied where to start the program,
+// otherwise the program is resumed at the current address.
+func (q *TMCL) RunApplication(specificAddress bool, address int) error {
+	useAddr := byte(0)
+	if specificAddress {
+		useAddr = 1
+	}
+
+	_, err := q.Exec(129, useAddr, 0, address)
+
+	return err
+}
+
+// StepApplication executes only the next command of a TMCL application.
+func (q *TMCL) StepApplication() error {
+	_, err := q.Exec(130, 0, 0, 0)
+	return err
+}
+
+// ResetApplication sets the program counter to zero and stops the standalone application.
+func (q *TMCL) ResetApplication() error {
+	_, err := q.Exec(131, 0, 0, 0)
+	return err
+}
+
+// GetApplicationStatus requests the TMCL application status.
+// Returns:
+// 0 – stop
+// 1 – run
+// 2 – step
+// 3 – reset
+func (q *TMCL) GetApplicationStatus() (int, error) {
+	val, err := q.Exec(135, 0, 0, 0)
+	if err != nil {
+		return 0, err
+	}
+	return int((uint32(val) >> 24) & 0xFF), nil
+}
+
+// GetFirmwareVersion requests the firmware/version information.
+func (q *TMCL) GetFirmwareVersion() (string, error) {
+	format := byte(1) // always use byte format
+
+	val, err := q.Exec(136, format, 0, 0)
+	if err != nil {
+		return "", err
+	}
+
+	return fmt.Sprintf("%08X", val), nil
 }

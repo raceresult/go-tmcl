@@ -11,6 +11,23 @@ import (
 	"github.com/tarm/serial"
 )
 
+const (
+	// DefaultSerialBaud is the default board baud.
+	DefaultSerialBaud = 9600
+
+	// GlobalParameterBank is the bank of the program variables.
+	GlobalParameterBank = 2
+
+	// DigitalInputBank is used with GIO and SIO for digital inputs.
+	DigitalInputBank = 0
+
+	// AnalogInputBank is the bank used for analog inputs.
+	AnalogInputBank = 1
+
+	// DigitalOutputBank is the bank used for controlling the outputs.
+	DigitalOutputBank = 2
+)
+
 const timeout = time.Second
 
 // TMCL is the main api object to connect to a TMCL board
