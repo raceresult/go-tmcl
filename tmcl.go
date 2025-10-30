@@ -1,9 +1,9 @@
 package tmcl
 
 import (
-	"bytes"
 	"encoding/binary"
-	"strconv"
+	"fmt"
+	"io"
 	"sync"
 	"time"
 
@@ -11,132 +11,100 @@ import (
 	"github.com/tarm/serial"
 )
 
-const (
-	// DefaultSerialBaud is the default board baud.
-	DefaultSerialBaud = 9600
-
-	// GlobalParameterBank is the bank of the program variables.
-	GlobalParameterBank = 2
-
-	// DigitalInputBank is used with GIO and SIO for digital inputs.
-	DigitalInputBank = 0
-
-	// AnalogInputBank is the bank used for analog inputs.
-	AnalogInputBank = 1
-
-	// DigitalOutputBank is the bank used for controlling the outputs.
-	DigitalOutputBank = 2
-)
-
 const timeout = time.Second
+
+var (
+	errorWrongChecksum             = errors.New("wrong checksum")
+	errorInvalidCommand            = errors.New("invalid command")
+	errorWrongType                 = errors.New("wrong type")
+	errorInvalidType               = errors.New("invalid type")
+	errorConfigurationEEPROMLocked = errors.New("configuration EEPROM locked")
+	errorCommandNotAvailable       = errors.New("command not available")
+)
 
 // TMCL is the main api object to connect to a TMCL board
 type TMCL struct {
-	ComPort  string
-	baudRate int
+	port io.ReadWriter
 
-	port     *serial.Port
 	cmdMutex sync.Mutex
 }
 
 // NewTMCL creates a new TMCL object
-func NewTMCL(comPort string, baudRate int) *TMCL {
+func NewTMCL(port io.ReadWriter) *TMCL {
 	return &TMCL{
-		ComPort:  comPort,
-		baudRate: baudRate,
+		port: port,
 	}
-}
-
-// OpenPort opens the serial port
-func (q *TMCL) OpenPort() error {
-	if q.port != nil {
-		return nil
-	}
-
-	c := &serial.Config{Name: q.ComPort, Baud: q.baudRate}
-	port, err := serial.OpenPort(c)
-	if err != nil {
-		return err
-	}
-	q.port = port
-	return nil
-}
-
-// ClosePort closes the serial port
-func (q *TMCL) ClosePort() {
-	if q.port == nil {
-		return
-	}
-	_ = q.port.Close()
-	q.port = nil
 }
 
 // Exec is the general function to call a command on the board
-func (q *TMCL) Exec(cmd byte, typeNo byte, motorOrBank byte, value int) (int, error) {
+func (q *TMCL) Exec(cmd byte, typeNo byte, motorOrBank byte, value int32) (int32, error) {
 	// one command at a time
 	q.cmdMutex.Lock()
 	defer q.cmdMutex.Unlock()
 
-	// open port if not done yet
-	if err := q.OpenPort(); err != nil {
-		return 0, err
+	if q.port == nil {
+		return 0, errors.New("port not open")
 	}
 
-	// create command
-	bts := make([]byte, 9)
-	bts[1] = cmd
-	bts[2] = typeNo
-	bts[3] = motorOrBank
-	buff := new(bytes.Buffer)
-	if err := binary.Write(buff, binary.BigEndian, uint32(value)); err != nil {
-		return 0, err
-	}
-	bts[4] = buff.Bytes()[0]
-	bts[5] = buff.Bytes()[1]
-	bts[6] = buff.Bytes()[2]
-	bts[7] = buff.Bytes()[3]
+	var tx [9]byte
+	tx[0] = 2 // module address not used
+	tx[1] = cmd
+	tx[2] = typeNo
+	tx[3] = motorOrBank
+	binary.BigEndian.PutUint32(tx[4:8], uint32(value))
+	tx[8] = calcChecksum(tx[:8])
 
-	// calc checksum
-	bts[8] = calcChecksum(bts[:8])
+	// lg.Debug().Msgf("tmcl >>> %x (cmd: %d, index: %d, bank: %d, val: %d)", tx, typeNo, cmd, motorOrBank, value)
 
 	// send
-	if _, err := q.port.Write(bts); err != nil {
+	if _, err := q.port.Write(tx[:]); err != nil {
 		return 0, err
 	}
 
-	// wait for response
-	start := time.Now()
-	var buf []byte
-	for {
-		buf2 := make([]byte, 9)
-		n, err := q.port.Read(buf2)
-		if err != nil {
-			return 0, err
-		}
-		if n != 0 {
-			buf = append(buf, buf2[:n]...)
-		}
-		if len(buf) < 9 {
-			if time.Since(start) > timeout {
-				return 0, errors.New("timeout")
-			}
+	var resp [9]byte
+	// This call depends on a timeout being set for the serial-port.
+	if _, err := io.ReadFull(q.port, resp[:]); err != nil {
+		return 0, err
+	}
 
-			time.Sleep(time.Millisecond)
-			continue
-		}
+	returnValue := int32(binary.BigEndian.Uint32(resp[4:8]))
+	// lg.Debug().Msgf("tmcl <<< %x (val: %d)", resp, returnValue)
 
-		// check checksum
-		if buf[8] != calcChecksum(buf[:8]) {
-			return 0, errors.New("checksum invalid")
-		}
+	// check checksum
+	if resp[8] != calcChecksum(resp[:8]) {
+		return 0, errorWrongChecksum
+	}
 
-		// check status code
-		if buf[2] != 100 {
-			return 0, errors.New("board returned error code " + strconv.Itoa(int(buf[2])))
-		}
+	// check status code
+	if resp[2] < 100 {
+		return 0, getError(resp[2])
+	}
 
-		// return result
-		return int(binary.BigEndian.Uint32(buf[4:8])), nil
+	// return result
+	return returnValue, nil
+}
+
+// getError is a helper method to return meaningful errors.
+func getError(code byte) error {
+	switch code {
+	case 100, 101:
+		// 100: success
+		// 101: Command loaded into TMCL program EEPROM
+		return nil
+	case 1:
+		return errorWrongChecksum
+	case 2:
+		return errorInvalidCommand
+	case 3:
+		return errorWrongType
+	case 4:
+		return errorInvalidType
+	case 5:
+		return errorConfigurationEEPROMLocked
+	case 6:
+		return errorCommandNotAvailable
+	default:
+		return fmt.Errorf("board returned error code %d", code)
 	}
 }
 
@@ -146,5 +114,47 @@ func calcChecksum(bts []byte) byte {
 	for _, b := range bts {
 		x += b
 	}
+
 	return x
+}
+
+// Serial is a TMCL board connected via serial.
+type Serial struct {
+	TMCL
+
+	serialPort *serial.Port
+}
+
+// NewSerial creates a new struct for a TMCL-Board that opens a serial itself.
+func NewSerial() *Serial {
+	return &Serial{}
+}
+
+// OpenPort opens the serial port.
+func (q *Serial) OpenPort(comPort string, baudRate int) error {
+	if q.serialPort != nil {
+		return nil
+	}
+
+	c := &serial.Config{Name: comPort, Baud: baudRate, ReadTimeout: timeout}
+	port, err := serial.OpenPort(c)
+	if err != nil {
+		return err
+	}
+
+	q.port = port
+	q.serialPort = port
+
+	return nil
+}
+
+// ClosePort closes the serial port. Do not call this method if you passed a port with UseExistingPort.
+func (q *Serial) ClosePort() {
+	if q.serialPort == nil {
+		return
+	}
+
+	_ = q.serialPort.Close()
+	q.port = nil
+	q.serialPort = nil
 }
