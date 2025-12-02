@@ -25,14 +25,20 @@ var (
 // TMCL is the main api object to connect to a TMCL board
 type TMCL struct {
 	port io.ReadWriter
+	log  Logger
 
 	cmdMutex sync.Mutex
 }
 
 // NewTMCL creates a new TMCL object
-func NewTMCL(port io.ReadWriter) *TMCL {
+func NewTMCL(port io.ReadWriter, logger Logger) *TMCL {
+	if logger == nil {
+		logger = NoopLogger{}
+	}
+
 	return &TMCL{
 		port: port,
+		log:  logger,
 	}
 }
 
@@ -120,14 +126,16 @@ func calcChecksum(bts []byte) byte {
 
 // Serial is a TMCL board connected via serial.
 type Serial struct {
-	TMCL
+	*TMCL
 
 	serialPort *serial.Port
 }
 
 // NewSerial creates a new struct for a TMCL-Board that opens a serial itself.
 func NewSerial() *Serial {
-	return &Serial{}
+	return &Serial{
+		TMCL: NewTMCL(nil, NoopLogger{}),
+	}
 }
 
 // OpenPort opens the serial port.
