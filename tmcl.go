@@ -60,7 +60,7 @@ func (q *TMCL) Exec(cmd byte, typeNo byte, motorOrBank byte, value int32) (int32
 	binary.BigEndian.PutUint32(tx[4:8], uint32(value))
 	tx[8] = calcChecksum(tx[:8])
 
-	// lg.Debug().Msgf("tmcl >>> %x (cmd: %d, index: %d, bank: %d, val: %d)", tx, typeNo, cmd, motorOrBank, value)
+	q.log.LogSend(tx[:], cmd, typeNo, motorOrBank, value)
 
 	// send
 	if _, err := q.port.Write(tx[:]); err != nil {
@@ -74,7 +74,8 @@ func (q *TMCL) Exec(cmd byte, typeNo byte, motorOrBank byte, value int32) (int32
 	}
 
 	returnValue := int32(binary.BigEndian.Uint32(resp[4:8]))
-	// lg.Debug().Msgf("tmcl <<< %x (val: %d)", resp, returnValue)
+
+	q.log.LogRecv(resp[:], returnValue)
 
 	// check checksum
 	if resp[8] != calcChecksum(resp[:8]) {
