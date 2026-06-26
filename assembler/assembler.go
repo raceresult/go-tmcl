@@ -62,11 +62,17 @@ type Options struct {
 	// Defaults to the directory of the source file (for CompileFile) or the
 	// current working directory (for Compile).
 	BaseDir string
+
+	// CheckCallDepth performs a static call-graph analysis after assembly and
+	// returns an error if any execution path nests CSUB calls deeper than the
+	// firmware limit of 8, or if recursive CSUB calls are detected.
+	// Recursive CSUB calls are always fatal regardless of depth.
+	CheckCallDepth bool
 }
 
 // DefaultOptions is the recommended default configuration: AppendStop enabled
 // (matches TMCL-IDE default behaviour), no range checking.
-var DefaultOptions = Options{AppendStop: true}
+var DefaultOptions = Options{AppendStop: true, CheckCallDepth: true}
 
 // JCCondition is the type field of the JC instruction.
 type JCCondition byte
@@ -183,7 +189,140 @@ func assembleTMCProgramOpts(source string, opts Options) ([]tmcl.ProgramInstruct
 		out = append(out, tmcl.ProgramInstruction{Cmd: tmcl.OpcodeSTOP})
 	}
 
+	if opts.CheckCallDepth {
+		if err := checkCSUBDepth(out); err != nil {
+			return nil, err
+		}
+	}
+
 	return out, nil
+}
+
+// maxCSUBNestingDepth is the firmware-imposed limit on CSUB call stack depth.
+const maxCSUBNestingDepth = 8
+
+// csubDirectCallees returns the addresses of all subroutines directly called
+// (via CSUB) from the subroutine whose first instruction is at entryPC.
+//
+// The traversal follows fall-through execution, unconditional jumps (JA), and
+// both edges of conditional jumps (JC) within the same subroutine frame.  It
+// stops at RSUB, RETI, and STOP, and treats each CSUB as an opaque call that
+// returns (i.e. execution continues with the instruction after the CSUB).
+func csubDirectCallees(instructions []tmcl.ProgramInstruction, entryPC int) []int {
+	n := len(instructions)
+	seen := make(map[int]bool)
+	calleeSeen := make(map[int]bool)
+	var callees []int
+	worklist := []int{entryPC}
+
+	for len(worklist) > 0 {
+		pc := worklist[len(worklist)-1]
+		worklist = worklist[:len(worklist)-1]
+
+		if pc < 0 || pc >= n || seen[pc] {
+			continue
+		}
+		seen[pc] = true
+
+		inst := instructions[pc]
+		switch inst.Cmd {
+		case tmcl.OpcodeRSUB, tmcl.OpcodeRETI, tmcl.OpcodeSTOP:
+			// Path ends here.
+		case tmcl.OpcodeCSUB:
+			target := int(inst.Value)
+			if !calleeSeen[target] {
+				calleeSeen[target] = true
+				callees = append(callees, target)
+			}
+			// CSUB returns; execution resumes at the next instruction.
+			worklist = append(worklist, pc+1)
+		case tmcl.OpcodeJA:
+			worklist = append(worklist, int(inst.Value))
+		case tmcl.OpcodeJC:
+			// Conditional branch: follow both the taken and fall-through edges.
+			worklist = append(worklist, int(inst.Value), pc+1)
+		default:
+			worklist = append(worklist, pc+1)
+		}
+	}
+	return callees
+}
+
+// checkCSUBDepth analyses the CSUB call graph of an assembled program and
+// returns an error if:
+//   - any execution path nests CSUB calls deeper than maxCSUBNestingDepth (8), or
+//   - a recursive call chain is detected (direct or indirect recursion).
+//
+// The analysis starts from instruction 0 (the main program) and from each
+// interrupt handler registered with VECT.
+func checkCSUBDepth(instructions []tmcl.ProgramInstruction) error {
+	if len(instructions) == 0 {
+		return nil
+	}
+
+	// Collect all subroutine entry points: every CSUB target and every VECT
+	// handler address, plus the implicit main-program entry at 0.
+	entrySet := map[int]bool{0: true}
+	for _, inst := range instructions {
+		if inst.Cmd == tmcl.OpcodeCSUB || inst.Cmd == tmcl.OpcodeVECT {
+			entrySet[int(inst.Value)] = true
+		}
+	}
+
+	// Build the call graph: subroutine entry address → slice of callee addresses.
+	callGraph := make(map[int][]int, len(entrySet))
+	for ep := range entrySet {
+		callGraph[ep] = csubDirectCallees(instructions, ep)
+	}
+
+	// DFS over the call graph.  inStack is the set of entry addresses on the
+	// current call path; it detects (mutual) recursion.  depth is the current
+	// CSUB nesting level (0 = top-level / not inside any CSUB call).
+	var dfs func(pc, depth int, inStack map[int]bool) error
+	dfs = func(pc, depth int, inStack map[int]bool) error {
+		if depth > maxCSUBNestingDepth {
+			return fmt.Errorf(
+				"CSUB call depth %d exceeds the firmware maximum of %d",
+				depth, maxCSUBNestingDepth)
+		}
+		if inStack[pc] {
+			return fmt.Errorf(
+				"recursive CSUB detected: subroutine at instruction %d is called while already on the call stack",
+				pc)
+		}
+
+		callees := callGraph[pc]
+		if len(callees) == 0 {
+			return nil
+		}
+
+		inStack[pc] = true
+		for _, callee := range callees {
+			if err := dfs(callee, depth+1, inStack); err != nil {
+				return err
+			}
+		}
+		delete(inStack, pc)
+		return nil
+	}
+
+	// Analyse the main program entry point.
+	if err := dfs(0, 0, make(map[int]bool)); err != nil {
+		return err
+	}
+
+	// Analyse each interrupt handler independently.  An interrupt can fire at
+	// any point during execution, so the handler's own call depth must not
+	// exceed the limit on its own.
+	for _, inst := range instructions {
+		if inst.Cmd == tmcl.OpcodeVECT {
+			if err := dfs(int(inst.Value), 0, make(map[int]bool)); err != nil {
+				return err
+			}
+		}
+	}
+
+	return nil
 }
 
 func assembleLine(

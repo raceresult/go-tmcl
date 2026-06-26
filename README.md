@@ -1,3 +1,7 @@
+race result AG is always looking for smart, passionate and hard-working Golang and Javascript developers with both strong attention to the detail and an entrepreneurial approach to tasks.
+
+We are a Germany-based company building technology for timing sports events such London Marathon, Challenge Roth, Tour Down Under and thousands of other races in more than 80 countries. Check out [www.raceresult.com](https://www.raceresult.com) and [karriere.raceresult.com](https://karriere.raceresult.com) for more information.
+
 # go-tmcl
 
 Go library for communicating with [Trinamic](https://www.trinamic.com/) TMCM stepper-motor boards over the TMCL (

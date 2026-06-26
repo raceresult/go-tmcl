@@ -110,3 +110,114 @@ func chunkAt(b []byte, i int) []byte {
 	}
 	return b[i:end]
 }
+
+// TestCheckCSUBDepth verifies that the assembler rejects programs that exceed
+// the firmware's CSUB nesting limit of 8 and accepts programs that stay within it.
+func TestCheckCSUBDepth(t *testing.T) {
+	opts := assembler.Options{CheckCallDepth: true}
+
+	// Helper: build a TMCL program with n levels of CSUB nesting.
+	// Layout: each subroutine calls the next one, the innermost returns.
+	//
+	//   0: CSUB 2       ; call level-1 sub (entry at instruction 2)
+	//   1: STOP
+	//   2: CSUB 4       ; call level-2 sub (entry at instruction 4)
+	//   3: RSUB
+	//   4: CSUB 6       ; ...
+	//   5: RSUB
+	//   ...
+	//   2*(n-1):   NOP  ; innermost subroutine body
+	//   2*(n-1)+1: RSUB
+	makeNested := func(n int) string {
+		var sb strings.Builder
+		for i := 0; i < n; i++ {
+			// Instruction index 2*i: call the next subroutine (starts at 2*(i+1))
+			// or NOP for the innermost.
+			if i < n-1 {
+				fmt.Fprintf(&sb, "CSUB sub%d\n", i+1)
+			} else {
+				sb.WriteString("NOP\n")
+			}
+			// Instruction index 2*i+1: return (or STOP for the outermost caller).
+			if i == 0 {
+				sb.WriteString("STOP\n")
+			} else {
+				sb.WriteString("RSUB\n")
+			}
+			if i < n-1 {
+				fmt.Fprintf(&sb, "sub%d:\n", i+1)
+			}
+		}
+		return sb.String()
+	}
+
+	t.Run("depth8_ok", func(t *testing.T) {
+		// makeNested(n) produces n-1 CSUB calls, so n=9 → depth 8 (the limit).
+		src := makeNested(9)
+		if _, err := assembler.Compile(src, opts); err != nil {
+			t.Errorf("expected no error for depth 8, got: %v", err)
+		}
+	})
+
+	t.Run("depth9_error", func(t *testing.T) {
+		// n=10 → depth 9 (one beyond the limit).
+		src := makeNested(10)
+		_, err := assembler.Compile(src, opts)
+		if err == nil {
+			t.Error("expected error for depth 9, got nil")
+		} else if !strings.Contains(err.Error(), "depth") {
+			t.Errorf("unexpected error message: %v", err)
+		}
+	})
+
+	t.Run("recursion_error", func(t *testing.T) {
+		// sub1 calls sub2, sub2 calls sub1 — mutual recursion.
+		src := `
+CSUB sub1
+STOP
+sub1:
+CSUB sub2
+RSUB
+sub2:
+CSUB sub1
+RSUB
+`
+		_, err := assembler.Compile(src, opts)
+		if err == nil {
+			t.Error("expected error for recursive CSUB, got nil")
+		} else if !strings.Contains(err.Error(), "recursive") {
+			t.Errorf("unexpected error message: %v", err)
+		}
+	})
+
+	t.Run("testdata_depth9_rejected", func(t *testing.T) {
+		_, err := assembler.CompileFileOpts("testdata/csub-depth9.tmc", opts)
+		if err == nil {
+			t.Error("expected assembler to reject csub-depth9.tmc, got nil error")
+		} else {
+			t.Logf("correctly rejected: %v", err)
+		}
+	})
+
+	t.Run("testdata_depth8_accepted", func(t *testing.T) {
+		if _, err := assembler.CompileFileOpts("testdata/csub-depth8.tmc", opts); err != nil {
+			t.Errorf("expected assembler to accept csub-depth8.tmc, got: %v", err)
+		}
+	})
+
+	t.Run("no_csub", func(t *testing.T) {
+		src := "NOP\nSTOP\n"
+		if _, err := assembler.Compile(src, opts); err != nil {
+			t.Errorf("expected no error for program without CSUB, got: %v", err)
+		}
+	})
+
+	t.Run("disabled", func(t *testing.T) {
+		// With CheckCallDepth disabled the depth-9 program must not produce an error.
+		src := makeNested(10)
+		if _, err := assembler.Compile(src, assembler.Options{}); err != nil {
+			t.Errorf("expected no error when check is disabled, got: %v", err)
+		}
+	})
+}
+
