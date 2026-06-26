@@ -1,0 +1,23 @@
+// Hello World: spin motor 0 back and forth
+//
+// REQUIRED before any movement:
+SAP 6, 0, 200          // AP6: motor current — REQUIRED (motor won't move without torque)
+SAP 5, 0, 100          // AP5: acceleration  — REQUIRED for ROR/ROL (needed to ramp up to speed)
+
+// OPTIONAL (only needed if limit switches are physically wired to the board):
+// SAP 12, 0, 1        // disable right limit switch
+// SAP 13, 0, 1        // disable left limit switch
+
+// NOT needed for ROR/ROL (AP4 max-speed only limits MVP position mode, not velocity mode):
+// SAP 4, 0, 200
+
+LOOP:
+    ROR 0, 50
+    WAIT TICKS, 0, 500
+    MST 0
+    WAIT TICKS, 0, 500
+    ROL 0, 50
+    WAIT TICKS, 0, 500
+    MST 0
+    WAIT TICKS, 0, 500
+JA LOOP

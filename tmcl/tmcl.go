@@ -2,12 +2,12 @@ package tmcl
 
 import (
 	"encoding/binary"
+	"errors"
 	"fmt"
 	"io"
 	"sync"
 	"time"
 
-	"github.com/pkg/errors"
 	"github.com/tarm/serial"
 )
 
@@ -48,22 +48,7 @@ func (q *TMCL) Exec(cmd byte, typeNo byte, motorOrBank byte, value int32) (int32
 	q.cmdMutex.Lock()
 	defer q.cmdMutex.Unlock()
 
-	if q.port == nil {
-		return 0, errors.New("port not open")
-	}
-
-	var tx [9]byte
-	tx[0] = 2 // module address not used
-	tx[1] = cmd
-	tx[2] = typeNo
-	tx[3] = motorOrBank
-	binary.BigEndian.PutUint32(tx[4:8], uint32(value))
-	tx[8] = calcChecksum(tx[:8])
-
-	q.log.LogSend(tx[:], cmd, typeNo, motorOrBank, value)
-
-	// send
-	if _, err := q.port.Write(tx[:]); err != nil {
+	if err := q.send(cmd, typeNo, motorOrBank, value); err != nil {
 		return 0, err
 	}
 
@@ -89,6 +74,35 @@ func (q *TMCL) Exec(cmd byte, typeNo byte, motorOrBank byte, value int32) (int32
 
 	// return result
 	return returnValue, nil
+}
+
+// ExecNoReply sends a command but does not wait for a reply.
+// Used for commands like BOOT and BOOT_START_APPL that do not produce a reply.
+func (q *TMCL) ExecNoReply(cmd byte, typeNo byte, motorOrBank byte, value int32) error {
+	q.cmdMutex.Lock()
+	defer q.cmdMutex.Unlock()
+
+	return q.send(cmd, typeNo, motorOrBank, value)
+}
+
+// send builds and transmits a single TMCL frame. Must be called with cmdMutex held.
+func (q *TMCL) send(cmd byte, typeNo byte, motorOrBank byte, value int32) error {
+	if q.port == nil {
+		return errors.New("port not open")
+	}
+
+	var tx [9]byte
+	tx[0] = 1 // module address (host → module: address 1)
+	tx[1] = cmd
+	tx[2] = typeNo
+	tx[3] = motorOrBank
+	binary.BigEndian.PutUint32(tx[4:8], uint32(value))
+	tx[8] = calcChecksum(tx[:8])
+
+	q.log.LogSend(tx[:], cmd, typeNo, motorOrBank, value)
+
+	_, err := q.port.Write(tx[:])
+	return err
 }
 
 // getError is a helper method to return meaningful errors.

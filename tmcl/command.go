@@ -2,10 +2,36 @@ package tmcl
 
 import "fmt"
 
+// ApplicationStatus is the return value of GetApplicationStatus.
+type ApplicationStatus int32
+
 const (
-	ABS   byte = 0
-	REL   byte = 1
-	COORD byte = 2
+	ApplicationStopped ApplicationStatus = 0
+	ApplicationRunning ApplicationStatus = 1
+	ApplicationStep    ApplicationStatus = 2
+	ApplicationReset   ApplicationStatus = 3
+)
+
+func (s ApplicationStatus) String() string {
+	switch s {
+	case ApplicationStopped:
+		return "stopped"
+	case ApplicationRunning:
+		return "running"
+	case ApplicationStep:
+		return "step"
+	case ApplicationReset:
+		return "reset"
+	default:
+		return fmt.Sprintf("unknown(%d)", int32(s))
+	}
+}
+type MVPMode byte
+
+const (
+	ABS   MVPMode = 0 // move to absolute position
+	REL   MVPMode = 1 // move to relative position
+	COORD MVPMode = 2 // move to stored coordinate
 )
 
 const (
@@ -29,102 +55,116 @@ type Board interface {
 	ROR(motor byte, velocity int32) error
 	ROL(motor byte, velocity int32) error
 	MST(motor byte) error
-	MVP(mode byte, motor byte, value int32) error
+	MVP(mode MVPMode, motor byte, value int32) error
 	SAP(index byte, motor byte, value int32) error
 	GAP(index byte, motor byte) (int32, error)
 	STAP(index byte, motor byte) error
 	RSAP(index byte, motor byte) error
 	SGP(index byte, bank byte, value int32) error
 	GGP(index byte, bank byte) (int32, error)
-	STGP(index byte, bank byte) (int32, error)
-	RSGP(index byte, bank byte) (int32, error)
+	STGP(index byte, bank byte) error
+	RSGP(index byte, bank byte) error
 	SIO(port byte, bank byte, value bool) error
 	GIO(port byte, bank byte) (int32, error)
 	StopApplication() error
 	RunApplication(specificAddress bool, address int32) error
 	StepApplication() error
 	ResetApplication() error
-	GetApplicationStatus() (int32, error)
+	GetApplicationStatus() (ApplicationStatus, error)
 	GetFirmwareVersion() (string, error)
 }
 
-// ROR is Rotate right
+// StopMotors stops motors 0 through count-1. It is safe to call before
+// flashing a program to ensure no motors are running while the EEPROM is
+// being written.
+func (q *TMCL) StopMotors(count byte) error {
+	for i := byte(0); i < count; i++ {
+		if err := q.MST(i); err != nil {
+			return fmt.Errorf("stop motor %d: %w", i, err)
+		}
+	}
+	return nil
+}
+
+// ROR rotates the motor to the right at the given velocity.
 func (q *TMCL) ROR(motor byte, velocity int32) error {
 	_, err := q.Exec(1, 0, motor, velocity)
 
 	return err
 }
 
-// ROL is reotate left
+// ROL rotates the motor to the left at the given velocity.
 func (q *TMCL) ROL(motor byte, velocity int32) error {
 	_, err := q.Exec(2, 0, motor, velocity)
 
 	return err
 }
 
-// MST is motor stop
+// MST stops the motor.
 func (q *TMCL) MST(motor byte) error {
 	_, err := q.Exec(3, 0, motor, 0)
 
 	return err
 }
 
-// MVP is moving an axis
-func (q *TMCL) MVP(mode byte, motor byte, value int32) error {
-	_, err := q.Exec(4, mode, motor, value)
+// MVP moves an axis to the given position.
+func (q *TMCL) MVP(mode MVPMode, motor byte, value int32) error {
+	_, err := q.Exec(4, byte(mode), motor, value)
 
 	return err
 }
 
-// SAP is set axis parameter
+// SAP sets an axis parameter.
 func (q *TMCL) SAP(index byte, motor byte, value int32) error {
 	_, err := q.Exec(5, index, motor, value)
 
 	return err
 }
 
-// GAP is get axis parameter
+// GAP gets an axis parameter.
 func (q *TMCL) GAP(index byte, motor byte) (int32, error) {
 	return q.Exec(6, index, motor, 0)
 }
 
-// STAP is store axis parameter
+// STAP stores an axis parameter to EEPROM.
 func (q *TMCL) STAP(index byte, motor byte) error {
 	_, err := q.Exec(7, index, motor, 0)
 
 	return err
 }
 
-// RSAP is restore axis parameter
+// RSAP restores an axis parameter from EEPROM.
 func (q *TMCL) RSAP(index byte, motor byte) error {
 	_, err := q.Exec(8, index, motor, 0)
 
 	return err
 }
 
-// SGP is set global parameter
+// SGP sets a global parameter.
 func (q *TMCL) SGP(index byte, bank byte, value int32) error {
 	_, err := q.Exec(9, index, bank, value)
 
 	return err
 }
 
-// GGP is get global parameter
+// GGP gets a global parameter.
 func (q *TMCL) GGP(index byte, bank byte) (int32, error) {
 	return q.Exec(10, index, bank, 0)
 }
 
-// STGP is store global parameter
-func (q *TMCL) STGP(index byte, bank byte) (int32, error) {
-	return q.Exec(11, index, bank, 0)
+// STGP stores a global parameter to EEPROM.
+func (q *TMCL) STGP(index byte, bank byte) error {
+	_, err := q.Exec(11, index, bank, 0)
+	return err
 }
 
-// RSGP is restore global parameter
-func (q *TMCL) RSGP(index byte, bank byte) (int32, error) {
-	return q.Exec(12, index, bank, 0)
+// RSGP restores a global parameter from EEPROM.
+func (q *TMCL) RSGP(index byte, bank byte) error {
+	_, err := q.Exec(12, index, bank, 0)
+	return err
 }
 
-// SIO is set io
+// SIO sets a digital output port.
 func (q *TMCL) SIO(port byte, bank byte, value bool) error {
 	var b int32 = 0
 	if value {
@@ -136,7 +176,7 @@ func (q *TMCL) SIO(port byte, bank byte, value bool) error {
 	return err
 }
 
-// GIO is get io
+// GIO gets the value of an input or output port.
 func (q *TMCL) GIO(port byte, bank byte) (int32, error) {
 	return q.Exec(15, port, bank, 0)
 }
@@ -176,19 +216,17 @@ func (q *TMCL) ResetApplication() error {
 	return err
 }
 
-// GetApplicationStatus requests the TMCL application status.
-// Returns:
-// 0 – stop
-// 1 – run
-// 2 – step
-// 3 – reset
-func (q *TMCL) GetApplicationStatus() (int32, error) {
+// GetApplicationStatus returns the current state of the TMCL standalone application.
+//
+// The TMCM-351 firmware packs the state in the high byte of the reply value
+// field. The lower bytes contain additional board state (e.g. the program
+// counter) whose exact encoding is firmware-specific.
+func (q *TMCL) GetApplicationStatus() (ApplicationStatus, error) {
 	val, err := q.Exec(135, 0, 0, 0)
 	if err != nil {
 		return 0, err
 	}
-
-	return int32((uint32(val) >> 24) & 0xFF), nil
+	return ApplicationStatus((uint32(val) >> 24) & 0xFF), nil
 }
 
 // GetFirmwareVersion requests the firmware/version information.

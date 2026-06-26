@@ -1,12 +1,7 @@
-module github.com/raceresult/go-tmcl/v2
+module github.com/raceresult/go-tmcl/v3
 
-go 1.24.0
+go 1.25.0
 
-toolchain go1.24.6
+require github.com/tarm/serial v0.0.0-20180830185346-98f6abe2eb07
 
-require (
-	github.com/pkg/errors v0.9.1
-	github.com/tarm/serial v0.0.0-20180830185346-98f6abe2eb07
-)
-
-require golang.org/x/sys v0.37.0 // indirect
+require golang.org/x/sys v0.46.0 // indirect
